@@ -1,0 +1,130 @@
+#!/bin/bash
+# Author: dmatosl <danielmatos.lima@gmail.com>
+# Description: Script to deploy new Centos virtual machines using cloud-init and Libvirt
+
+set -euo pipefail
+
+VIRT_MANAGER_DIR=${VIRT_MANAGER_DIR:-$PWD/.config}
+VIRT_MANAGER_IMAGE="dmatosl/virt-manager:0.0.1"
+REMOTE_LIBVIRT_URI=${REMOTE_LIBVIRT_URI:-"qemu+ssh://daniel@iron.lan/system"}
+ID_RSA_FILE=${ID_RSA_FILE:-"/Users/daniel/.ssh/id_rsa"}
+
+# VM_OPTIONS:
+VM_CPU=${VM_CPU:-1}
+VM_MEMORY=${VM_MEMORY:-1024}
+VM_DISK_SIZE=${VM_DISK_SIZE:-"16G"}
+VM_IMAGE=${VM_IMAGE:-"CentOS-7-x86_64-GenericCloud.qcow2"}
+VM_IMAGE_PATH="/var/lib/libvirt/images/${VM_IMAGE}"
+VM_PATH="/var/lib/libvirt/images"
+
+fail(){
+    case $1 in
+        1)
+            echo "$0: ERROR"
+            echo "unable to define new hostname"
+            exit 1
+            ;;
+    esac
+}
+
+define_hostname(){
+    # AWS LIKE Hostname i-xxxxxxxx
+    new_hostname="i-$(cat /dev/urandom | env LC_CTYPE=C tr -dc '0-9' | fold -w 8 | head -n 1)"
+    [[ -z "$new_hostname" ]] && fail 1
+    echo $new_hostname
+}
+
+run_cmd(){
+    docker run --rm -it \
+      -v ${ID_RSA_FILE}:/root/.ssh/id_rsa \
+      ${VIRT_MANAGER_IMAGE} \
+      $@
+}
+run_remote_cmd(){
+    docker run --rm -i --privileged \
+      -v /sys/fs/cgroup:/sys/fs/cgroup \
+      -v ${ID_RSA_FILE}:/root/.ssh/id_rsa \
+      ${VIRT_MANAGER_IMAGE} \
+      ssh daniel@iron.lan $@
+}
+
+qemu_img(){
+    echo "creating vm from template"
+    run_remote_cmd /usr/bin/qemu-img \
+      create \
+      -f qcow2 \
+      -b $VM_IMAGE_PATH $VM_PATH/${1}.qcow2 $VM_DISK_SIZE >/dev/null 2>&1 
+}
+
+cloud_init_configdrive(){
+    CONFIG_DRIVE=/tmp/config_drive/${1}/openstack/latest
+    run_remote_cmd /bin/mkdir -p $CONFIG_DRIVE
+    echo "generating meta-data and user-data"
+    run_remote_cmd /bin/cat \> ${CONFIG_DRIVE}/meta-data <<EOF
+instance-id: ${1}
+local-hostname: ${1}.lan
+EOF
+	run_remote_cmd /bin/cat \> ${CONFIG_DRIVE}/user-data <<EOF
+#cloud-config
+
+users:
+  - name: daniel
+    lock_passwd: true
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - $(cat ${ID_RSA_FILE}.pub )
+
+hostname: ${1}.lan
+
+runcmd:
+  - [ systemctl, restart, network ]
+EOF
+  #run_remote_cmd /bin/cat ${CONFIG_DRIVE}/meta-data ${CONFIG_DRIVE}/user-data
+  echo "generating config drive"
+  run_remote_cmd /usr/bin/genisoimage -o $VM_PATH/${1}_config_drive.iso \
+    -V cidata -r -J $CONFIG_DRIVE/user-data $CONFIG_DRIVE/meta-data >/dev/null 2>&1	
+}
+
+virt_install(){
+    run_cmd /usr/bin/virt-install \
+      --connect $REMOTE_LIBVIRT_URI \
+      --import \
+      --name $1 \
+      --ram $VM_MEMORY \
+      --vcpus $VM_CPU \
+      --os-type=linux \
+      --os-variant centos7.0 \
+      --disk path=$VM_PATH/${1}.qcow2,format=qcow2,bus=virtio \
+      --disk path=$VM_PATH/${1}_config_drive.iso,device=cdrom \
+      --vnc \
+      --noautoconsole \
+      --network bridge=br0
+}
+
+
+virsh_create(){
+    run_cmd /usr/bin/virsh --connect=$REMOTE_LIBVIRT_URI create /libvirt.xml
+}
+
+# Define hostname
+#VM_HOSTNAME=$(define_hostname)
+VM_HOSTNAME=${1}
+
+echo $VM_HOSTNAME
+
+# Clone vm_image
+qemu_img $VM_HOSTNAME
+
+# Cloudinit cdrom drive
+cloud_init_configdrive $VM_HOSTNAME
+
+# Start virtual machine using virt-install
+virt_install $VM_HOSTNAME
+
+#docker run --rm -it \
+#  -v ~/.ssh/id_rsa:/root/.ssh/id_rsa \
+#  -v ${VIRT_MANAGER_DIR}:/root/.config/dconf \
+#  dmatosl/virt-manager:0.0.1 sh
+
+
+

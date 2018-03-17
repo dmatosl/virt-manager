@@ -1,0 +1,3 @@
+[submodule "docker-virt-manager"]
+	path = docker-virt-manager
+	url = https://github.com/dmatosl/docker-virt-manager.git

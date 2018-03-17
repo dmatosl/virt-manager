@@ -1,0 +1,136 @@
+#!/bin/bash
+
+set -euo pipefail
+
+VIRT_MANAGER_DIR=${VIRT_MANAGER_DIR:-$PWD/.config}
+VIRT_MANAGER_IMAGE="dmatosl/virt-manager:0.0.1"
+REMOTE_LIBVIRT_URI=${REMOTE_LIBVIRT_URI:-"qemu+ssh://daniel@iron.lan/system"}
+ID_RSA_FILE=${ID_RSA_FILE:-"/Users/daniel/.ssh/id_rsa"}
+
+# VM_OPTIONS:
+VM_CPU=${VM_CPU:-1}
+VM_MEMORY=${VM_MEMORY:-1024}
+VM_DISK_SIZE=${VM_DISK_SIZE:-"16G"}
+VM_IMAGE=${VM_IMAGE:-"coreos_production_qemu_image.img"}
+VM_IMAGE_PATH="/var/lib/libvirt/images/${VM_IMAGE}"
+VM_PATH="/var/lib/libvirt/images"
+
+fail(){
+    case $1 in
+        1)
+            echo "$0: ERROR"
+            echo "unable to define new hostname"
+            exit 1
+            ;;
+    esac
+}
+
+define_hostname(){
+    # AWS LIKE Hostname i-xxxxxxxx
+    new_hostname="i-$(cat /dev/urandom | env LC_CTYPE=C tr -dc '0-9' | fold -w 8 | head -n 1)"
+    [[ -z "$new_hostname" ]] && fail 1
+    echo $new_hostname
+}
+
+run_cmd(){
+    docker run --rm -it \
+      -v ${ID_RSA_FILE}:/root/.ssh/id_rsa \
+      ${VIRT_MANAGER_IMAGE} \
+      $@
+}
+
+run_cmd_arg(){
+    domain=${1}
+    shift
+    docker run --rm -it \
+      -v ${ID_RSA_FILE}:/root/.ssh/id_rsa \
+      -v $PWD/tmp/${domain}.xml:/${domain}.xml \
+      ${VIRT_MANAGER_IMAGE} \
+      $@
+}
+
+
+run_remote_cmd(){
+    docker run --rm -i --privileged \
+      -v /sys/fs/cgroup:/sys/fs/cgroup \
+      -v ${ID_RSA_FILE}:/root/.ssh/id_rsa \
+      ${VIRT_MANAGER_IMAGE} \
+      ssh daniel@iron.lan $@
+}
+
+qemu_img(){
+    echo "creating vm from template"
+    run_remote_cmd /usr/bin/qemu-img \
+      create \
+      -f qcow2 \
+      -b $VM_IMAGE_PATH $VM_PATH/${1}.qcow2 $VM_DISK_SIZE >/dev/null 2>&1 
+}
+
+ignition_file(){
+	IGNITION_FILE=${VM_PATH}/${1}.ign
+	run_remote_cmd /bin/cat \> ${IGNITION_FILE} <<EOF
+{
+  "ignition": {
+    "version": "2.1.0"
+  },
+  "storage": {
+    "files": [{
+      "filesystem": "root",
+      "path": "/etc/hostname",
+      "mode": 420,
+      "contents": { "source": "data:,${1}.lan" }
+    }]
+  "passwd": {
+    "users": [
+      {
+        "name": "daniel",
+        "sshAuthorizedKeys": [
+          "$(cat ${ID_RSA_FILE}.pub)"
+        ]
+      }
+    ]
+  },
+ }
+}
+EOF
+}
+
+virt_install_xml(){
+    ignition_file=$VM_PATH/${1}.ign
+    run_cmd /usr/bin/virt-install \
+      --connect $REMOTE_LIBVIRT_URI \
+      --import \
+      --name $1 \
+      --ram $VM_MEMORY \
+      --vcpus $VM_CPU \
+      --os-type=linux \
+      --os-variant=virtio26 \
+      --disk path=$VM_PATH/${1}.qcow2,format=qcow2,bus=virtio \
+      --vnc \
+      --noautoconsole \
+      --network bridge=br0 \
+      --print-xml > $PWD/tmp/${1}.xml
+
+    gsed -i 's|type="kvm"|type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0"|' $PWD/tmp/${1}.xml
+    gsed -i "/<\/devices>/a <qemu:commandline>\n  <qemu:arg value='-fw_cfg'/>\n  <qemu:arg value='name=opt/com.coreos/config,file=${ignition_file}'/>\n</qemu:commandline>" $PWD/tmp/${1}.xml
+    run_cmd_arg ${1} /usr/bin/virsh --connect=$REMOTE_LIBVIRT_URI define /${1}.xml
+}
+
+virsh_create(){
+    run_cmd /usr/bin/virsh --connect=$REMOTE_LIBVIRT_URI create ${VM_PATH}/${1}.xml
+}
+
+# Define hostname
+VM_HOSTNAME=$(define_hostname)
+echo $VM_HOSTNAME
+
+# Clone vm_image
+qemu_img $VM_HOSTNAME
+
+# Create ignition file
+ignition_file $VM_HOSTNAME
+#cloud_init_configdrive $VM_HOSTNAME
+
+# Start virtual machine using virt-install
+virt_install_xml $VM_HOSTNAME
+
