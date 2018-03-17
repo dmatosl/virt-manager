@@ -5,7 +5,7 @@
 set -euo pipefail
 
 VIRT_MANAGER_DIR=${VIRT_MANAGER_DIR:-$PWD/.config}
-VIRT_MANAGER_IMAGE="dmatosl/virt-manager:0.0.1"
+VIRT_MANAGER_IMAGE="dmatosl/docker-virt-manager:latest"
 REMOTE_LIBVIRT_URI=${REMOTE_LIBVIRT_URI:-"qemu+ssh://daniel@iron.lan/system"}
 ID_RSA_FILE=${ID_RSA_FILE:-"/Users/daniel/.ssh/id_rsa"}
 
@@ -36,6 +36,7 @@ define_hostname(){
 
 run_cmd(){
     docker run --rm -it \
+      -v ~/.ssh/:/root/.ssh \
       -v ${ID_RSA_FILE}:/root/.ssh/id_rsa \
       ${VIRT_MANAGER_IMAGE} \
       $@
@@ -43,6 +44,7 @@ run_cmd(){
 run_remote_cmd(){
     docker run --rm -i --privileged \
       -v /sys/fs/cgroup:/sys/fs/cgroup \
+      -v ~/.ssh/:/root/.ssh \
       -v ${ID_RSA_FILE}:/root/.ssh/id_rsa \
       ${VIRT_MANAGER_IMAGE} \
       ssh daniel@iron.lan $@

@@ -5,9 +5,10 @@
 set -euo pipefail
 
 VIRT_MANAGER_DIR=${VIRT_MANAGER_DIR:-$PWD/.config}
+VIRT_MANAGER_IMAGE="dmatosl/docker-virt-manager:latest"
 
 docker run --rm -it \
   -e DISPLAY=${HOSTNAME}:0 \
-  -v ~/.ssh/id_rsa:/root/.ssh/id_rsa \
-  dmatosl/virt-manager:0.0.1 \
+  -v ~/.ssh:/root/.ssh \
+  ${VIRT_MANAGER_IMAGE} \
     /usr/bin/virsh --connect=qemu+ssh://daniel@iron.lan/system $@

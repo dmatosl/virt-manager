@@ -15,4 +15,4 @@ docker run --rm \
   -v ~/.ssh:/root/.ssh \
   -v ${VIRT_MANAGER_DIR}:/root/.config/dconf \
   $@ \
-  dmatosl/docker-virt-manager:latest
+  ${VIRT_MANAGER_IMAGE}
